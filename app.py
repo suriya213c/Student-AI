@@ -21,6 +21,8 @@ from AI.summarizer import extract_pdf_text, summarize_notes
 from AI.quiz_generator import generate_quiz
 from AI.predictor import calculate_academic_risk, predict_next_score
 from AI.learning_plan import generate_learning_plan
+from AI.resources import analyze_resource
+from AI.summarizer import extract_pdf_text, summarize_notes
 
 def show_performance(user_id):
     """Render useful quiz performance analytics for a student."""
@@ -95,31 +97,42 @@ class BaseUser(ABC):
 
     @abstractmethod
     def get_id(self):
-        raise NotImplementedError
+        return getattr(self, "user_id", None)
 
     @abstractmethod
     def get_name(self):
-        raise NotImplementedError
+        return getattr(self, "name", "")
 
     @abstractmethod
     def get_email(self):
-        raise NotImplementedError
+        return getattr(self, "email", "")
 
     @abstractmethod
     def get_username(self):
-        raise NotImplementedError
+        return getattr(self, "username", "")
 
     @abstractmethod
     def get_password(self):
-        raise NotImplementedError
+        return getattr(self, "password", "")
 
     @abstractmethod
     def validate_password(self, password):
-        raise NotImplementedError
+        stored_password = self.get_password()
+        return (
+            isinstance(password, str)
+            and bool(password)
+            and isinstance(stored_password, str)
+            and stored_password == password
+        )
 
     @abstractmethod
     def to_dict(self):
-        raise NotImplementedError
+        return {
+            "id": self.get_id(),
+            "name": self.get_name(),
+            "email": self.get_email(),
+            "username": self.get_username(),
+        }
 
 
 class Summary(ABC):
@@ -127,31 +140,44 @@ class Summary(ABC):
 
     @abstractmethod
     def get_text(self):
-        raise NotImplementedError
+        return getattr(self, "text", "") or ""
 
     @abstractmethod
     def get_title(self):
-        raise NotImplementedError
+        return getattr(self, "title", "Study Summary") or "Study Summary"
 
     @abstractmethod
     def get_source(self):
-        raise NotImplementedError
+        return getattr(self, "source", "Uploaded Material") or "Uploaded Material"
 
     @abstractmethod
     def get_created_at(self):
-        raise NotImplementedError
+        return getattr(self, "created_at", None)
 
     @abstractmethod
     def preview(self, max_length=180):
-        raise NotImplementedError
+        text = self.get_text().strip()
+        max_length = max(int(max_length), 0)
+        if len(text) <= max_length:
+            return text
+        if max_length == 0:
+            return ""
+        trimmed = text[:max_length].rsplit(" ", 1)[0]
+        return f"{trimmed or text[:max_length]}..."
 
     @abstractmethod
     def is_empty(self):
-        raise NotImplementedError
+        return not bool(self.get_text().strip())
 
     @abstractmethod
     def to_dict(self):
-        raise NotImplementedError
+        return {
+            "title": self.get_title(),
+            "source": self.get_source(),
+            "text": self.get_text(),
+            "created_at": self.get_created_at(),
+            "preview": self.preview(),
+        }
 
 
 class summary(Summary):
@@ -474,7 +500,6 @@ if "show_login" not in st.session_state:
 if "show_register" not in st.session_state:
     st.session_state.show_register = False
 
-
 # ==========================================
 # CSS
 # ==========================================
@@ -556,11 +581,23 @@ st.markdown("""
 }
 
 /* Buttons */
-
 .stButton > button {
     border-radius: 10px;
     min-height: 42px;
     font-weight: 600;
+}
+
+/* Sidebar navigation buttons */
+[data-testid="stSidebar"] .stButton > button {
+    background-color: #1f2937 !important;
+    color: #ffffff !important;
+    border: 1px solid #374151 !important;
+}
+
+[data-testid="stSidebar"] .stButton > button:hover {
+    background-color: #374151 !important;
+    color: #ffffff !important;
+    border-color: #60a5fa !important;
 }
 
 /* Hide Streamlit footer */
@@ -574,7 +611,6 @@ footer {
 # ==========================================
 # STUDENT DASHBOARD
 # ==========================================
-
 def show_dashboard():
 
     # --------------------------------------
@@ -709,10 +745,10 @@ def show_dashboard():
         st.divider()
 
         st.caption("MAIN MENU")
-
         if st.button(
             "🏠 Dashboard",
-            width="stretch"
+            width="stretch",
+            key="dashboard_button_line740"
         ):
             st.session_state.active_page = "Dashboard"
             st.rerun()
@@ -773,10 +809,7 @@ def show_dashboard():
             st.session_state.active_page = "Learning Plan"
             st.rerun()
 
-        if st.button(
-            "🌐 Study Resources",
-            use_container_width=True
-        ):
+        if st.button("🌐 Study Resources", key="study_resources_button"):
             st.session_state.active_page = "Resources"
             st.rerun()
 
@@ -803,7 +836,7 @@ def show_dashboard():
 
             st.rerun()
 
-    # ======================================
+# ======================================
 # PAGE ROUTER
 # ======================================
 
@@ -812,7 +845,19 @@ active_page = st.session_state.get(
     "Dashboard"
 )
 
+# ======================================
+# RENDER DASHBOARD AND SIDEBAR
+# ======================================
 
+if st.session_state.get("logged_in", False):
+    # Main sidebar Dashboard button
+    if st.button(
+        "🏠 Dashboard",
+        width="stretch",
+        key="sidebar_dashboard_unique"
+    ):
+        st.session_state.active_page = "Dashboard"
+        st.rerun()
 # ==========================================
 # ADVANCED STUDY RESOURCES
 # ==========================================
@@ -953,9 +998,229 @@ if active_page == "Resources":
                         st.warning(
                             "No readable content found."
                         )
-
     st.stop()
 
+    # ==========================================
+    # ADVANCED STUDY RESOURCES
+    # URL + FILE SUMMARIZER
+    # ==========================================
+
+    if active_page == "Resources":
+
+        st.title("🌐 Advanced Study Resources")
+        st.write(
+            "Summarize online learning resources and "
+            "uploaded study files using EduAI."
+        )
+        st.divider()
+
+        url_tab, file_tab = st.tabs([
+            "🔗 URL Summarizer",
+            "📄 File Summarizer"
+        ])
+
+        # --------------------------------------
+        # URL SUMMARIZER
+        # --------------------------------------
+        with url_tab:
+            st.subheader("Summarize Online Resources")
+
+            resource_url = st.text_input(
+                "Enter Resource URL",
+                placeholder="Paste a website, YouTube, or Google Drive URL...",
+                key="summary_resource_url"
+            )
+
+            if st.button(
+                "🤖 Summarize URL",
+                key="summarize_url_btn",
+                type="primary",
+                use_container_width=True
+            ):
+                if not resource_url.strip():
+                    st.warning("Please enter a URL.")
+                else:
+                    try:
+                        with st.spinner(
+                            "EduAI is extracting and summarizing..."
+                        ):
+                            resource = analyze_resource(
+                                resource_url.strip()
+                            )
+
+                            if not resource:
+                                st.error("Unable to analyze this URL.")
+                            else:
+                                resource_type = resource.get(
+                                    "type", "Web Resource"
+                                )
+                                extracted_text = resource.get("text", "")
+
+                                if extracted_text.startswith("RESOURCE_ERROR"):
+                                    st.error(extracted_text)
+
+                                elif extracted_text.strip():
+                                    summary = summarize_notes(
+                                        extracted_text[:20000]
+                                    )
+
+                                    st.success(
+                                        f"Summary ready: {resource_type}"
+                                    )
+                                    st.subheader("📝 Summary")
+                                    st.markdown(str(summary))
+
+                                    st.download_button(
+                                        "⬇️ Download URL Summary",
+                                        data=str(summary),
+                                        file_name="EduAI_URL_Summary.txt",
+                                        mime="text/plain"
+                                    )
+
+                                    with st.expander("View Extracted Content"):
+                                        st.text_area(
+                                            "Source content",
+                                            extracted_text[:10000],
+                                            height=250,
+                                            key="url_source_preview"
+                                        )
+
+                                elif resource_type == "YouTube":
+                                    st.video(
+                                        resource.get(
+                                            "watch_url", resource_url
+                                        )
+                                    )
+                                    st.warning(
+                                        "No transcript was extracted. "
+                                        "YouTube transcript extraction "
+                                        "must be supported by AI/resources.py."
+                                    )
+
+                                elif resource_type == "Google Drive":
+                                    st.link_button(
+                                        "📂 Open Google Drive File",
+                                        resource.get("url", resource_url)
+                                    )
+                                    st.warning(
+                                        "No readable text was extracted. "
+                                        "The Drive file must be accessible, "
+                                        "and its contents must be extracted."
+                                    )
+
+                                else:
+                                    st.warning(
+                                        "No readable content was extracted "
+                                        "from this URL."
+                                    )
+
+                    except Exception as e:
+                        st.error(f"URL summarization failed: {e}")
+
+        # --------------------------------------
+        # FILE SUMMARIZER
+        # --------------------------------------
+        with file_tab:
+            st.subheader("Summarize Study Files")
+
+            uploaded_file = st.file_uploader(
+                "Upload a PDF or TXT file",
+                type=["pdf", "txt"],
+                key="summary_uploaded_file"
+            )
+
+            summary_length = st.selectbox(
+                "Summary length",
+                ["Short", "Medium", "Detailed"],
+                index=1,
+                key="summary_length"
+            )
+
+            if st.button(
+                "📚 Summarize File",
+                key="summarize_file_btn",
+                type="primary",
+                use_container_width=True
+            ):
+                if uploaded_file is None:
+                    st.warning("Please upload a PDF or TXT file.")
+                else:
+                    try:
+                        with st.spinner("EduAI is reading your file..."):
+
+                            if uploaded_file.name.lower().endswith(".pdf"):
+                                extracted_text = extract_pdf_text(uploaded_file)
+                            else:
+                                extracted_text = uploaded_file.getvalue().decode(
+                                    "utf-8-sig"
+                                )
+
+                        if extracted_text.startswith("PDF_ERROR"):
+                            st.error(extracted_text)
+
+                        elif not extracted_text.strip():
+                            st.error(
+                                "No readable text was found. "
+                                "The PDF may be scanned or image-based."
+                            )
+
+                        else:
+                            instructions = {
+                                "Short": (
+                                    "Create a concise summary of the main "
+                                    "ideas and key points."
+                                ),
+                                "Medium": (
+                                    "Create a structured summary with "
+                                    "headings, key concepts, and explanations."
+                                ),
+                                "Detailed": (
+                                    "Create a detailed study guide with "
+                                    "headings, definitions, key concepts, "
+                                    "and examples."
+                                )
+                            }
+
+                            prompt = (
+                                "Summarize the following study material. "
+                                + instructions[summary_length]
+                                + "\n\nStudy material:\n"
+                                + extracted_text[:20000]
+                            )
+
+                            with st.spinner("Generating your summary..."):
+                                summary = summarize_notes(prompt)
+
+                            if summary:
+                                summary_text = str(summary)
+                                st.success(
+                                    f"Summary generated: {uploaded_file.name}"
+                                )
+                                st.subheader("📝 File Summary")
+                                st.markdown(summary_text)
+
+                                st.download_button(
+                                    "⬇️ Download Summary",
+                                    data=summary_text,
+                                    file_name="EduAI_File_Summary.txt",
+                                    mime="text/plain",
+                                    use_container_width=True
+                                )
+
+                                with st.expander("View Extracted Text"):
+                                    st.text_area(
+                                        "Extracted study content",
+                                        extracted_text[:10000],
+                                        height=300,
+                                        key="file_source_preview"
+                                    )
+                            else:
+                                st.warning("No summary was generated.")
+
+                    except Exception as e:
+                        st.error(f"File summarization failed: {e}")
+
+        st.stop()
 
 # ======================================
 # AI TUTOR
@@ -2116,11 +2381,22 @@ def show_home():
         """,
         unsafe_allow_html=True
     )
+
 # ==========================================
 # START APPLICATION
 # ==========================================
 
-if st.session_state.logged_in:
+if st.session_state.get("logged_in", False):
     show_dashboard()
 else:
     show_home()
+
+    if st.button(
+        "✨ Ask EduAI",
+        width="stretch",
+        type="primary",
+        key="ask_eduai_button"
+    ):
+        st.session_state.show_login = True
+        st.session_state.show_register = False
+        st.rerun()
